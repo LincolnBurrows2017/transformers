@@ -18,16 +18,15 @@ from .base import HfQuantizer
 
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
+    from ..utils.quantization_config import BitsAndBytesConfig
 
+from .._typing import has_torch_hpu, has_torch_npu, has_torch_xpu
 from ..utils import (
     ACCELERATE_MIN_VERSION,
     BITSANDBYTES_MIN_VERSION,
     is_accelerate_available,
     is_bitsandbytes_available,
     is_torch_available,
-    is_torch_hpu_available,
-    is_torch_npu_available,
-    is_torch_xpu_available,
     logging,
 )
 from .quantizers_utils import get_module_from_name
@@ -47,6 +46,7 @@ class Bnb8BitHfQuantizer(HfQuantizer):
     """
 
     requires_calibration = False
+    quantization_config: "BitsAndBytesConfig"
 
     def __init__(self, quantization_config, **kwargs):
         super().__init__(quantization_config, **kwargs)
@@ -87,11 +87,11 @@ class Bnb8BitHfQuantizer(HfQuantizer):
         if device_map is None:
             if torch.cuda.is_available():
                 device_map = {"": torch.cuda.current_device()}
-            elif is_torch_npu_available():
+            elif has_torch_npu(torch):
                 device_map = {"": f"npu:{torch.npu.current_device()}"}
-            elif is_torch_hpu_available():
+            elif has_torch_hpu(torch):
                 device_map = {"": f"hpu:{torch.hpu.current_device()}"}
-            elif is_torch_xpu_available():
+            elif has_torch_xpu(torch):
                 device_map = {"": torch.xpu.current_device()}
             else:
                 device_map = {"": "cpu"}
@@ -116,7 +116,7 @@ class Bnb8BitHfQuantizer(HfQuantizer):
         return isinstance(module, bnb.nn.Linear8bitLt) and name != "bias"
 
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):
-        model.is_loaded_in_8bit = True
+        setattr(model, "is_loaded_in_8bit", True)
         model.is_8bit_serializable = self.is_serializable()
         return model
 
