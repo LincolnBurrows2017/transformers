@@ -28,6 +28,7 @@ import huggingface_hub
 import typer
 
 from .. import __version__
+from .._typing import has_torch_hpu, has_torch_npu
 from ..integrations.deepspeed import is_deepspeed_available
 from ..utils import (
     is_accelerate_available,
@@ -47,7 +48,7 @@ def env(
     """Print information about the environment."""
     import safetensors
 
-    safetensors_version = safetensors.__version__
+    safetensors_version = safetensors.__version__  # type: ignore[attr-defined]
 
     accelerate_version = "not installed"
     accelerate_config = accelerate_config_str = "not found"
@@ -116,11 +117,13 @@ def env(
             info["XPU type"] = torch.xpu.get_device_name()
         elif pt_hpu_available:
             info["Using HPU in script?"] = "<fill in>"
-            info["HPU type"] = torch.hpu.get_device_name()
+            if has_torch_hpu(torch):
+                info["HPU type"] = torch.hpu.get_device_name()
         elif pt_npu_available:
             info["Using NPU in script?"] = "<fill in>"
-            info["NPU type"] = torch.npu.get_device_name()
-            info["CANN version"] = torch.version.cann
+            if has_torch_npu(torch):
+                info["NPU type"] = torch.npu.get_device_name()
+                info["CANN version"] = torch.version.cann
 
     print("\nCopy-and-paste the text below in your GitHub issue and FILL OUT the two last points.\n")
     print(_format_dict(info))

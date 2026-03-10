@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from io import BytesIO
 from threading import Thread
-from typing import TYPE_CHECKING, Annotated, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from huggingface_hub import scan_cache_dir
@@ -136,7 +136,7 @@ if serve_dependencies_available:
 
         file: bytes  # Overwritten -- pydantic isn't happy with `typing.IO[bytes]`, present in the original type
         generation_config: str
-        stream: bool = False
+        stream: bool
 
     # Contrarily to OpenAI's output types, input types are `TypedDict`, which don't have built-in validation.
     response_validator = TypeAdapter(TransformersResponseCreateParamsStreaming)
@@ -442,6 +442,8 @@ class Serve:
         self.input_validation = input_validation
         self.force_model = force_model
         self.non_blocking = non_blocking
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
 
         # Seed
         if default_seed is not None:
@@ -524,14 +526,15 @@ class Serve:
         async def audio_transcriptions(request: Request):
             # Parses the multipart/form-data request into the request format used by other endpoints
             async with request.form() as form:
+                file_field = form["file"]
                 parsed_request = TransformersTranscriptionCreateParams(
-                    file=await form["file"].read(),
+                    file=await file_field.read(),  # type: ignore[union-attr]
                     model=form["model"],
                     # TODO: add other fields
                 )
                 logger.debug(
-                    f"Received file: {form['file'].filename}; MIME type: {form['file'].content_type}; "
-                    f"size: {form['file'].size / 1024:.2f} KiB"
+                    f"Received file: {file_field.filename}; MIME type: {file_field.content_type}; "  # type: ignore[union-attr]
+                    f"size: {file_field.size / 1024:.2f} KiB"  # type: ignore[operator]
                 )
             self.validate_transcription_request(request=parsed_request)
 
@@ -587,7 +590,7 @@ class Serve:
     def _validate_request(
         self,
         request: dict,
-        schema: TypedDict,
+        schema: type,
         validator: TypeAdapter,
         unused_fields: set,
     ):
@@ -611,7 +614,7 @@ class Serve:
 
         # Validate unexpected keys -- Pydantic doesn't validate extra keys in the request.
         input_keys = set(request.keys())
-        possible_keys = schema.__mutable_keys__
+        possible_keys = schema.__mutable_keys__  # type: ignore[attr-defined]
         unexpected_keys = input_keys - possible_keys
         if unexpected_keys:
             logger.error(f"Unexpected keys in the request: {unexpected_keys}")
@@ -737,7 +740,7 @@ class Serve:
 
     @staticmethod
     @lru_cache
-    def get_gen_models(cache_dir: str | None = None) -> list[dict[str, any]]:
+    def get_gen_models(cache_dir: str | None = None) -> list[dict[str, Any]]:
         """
         List LLMs and VLMs in the cache.
         """
@@ -836,8 +839,11 @@ class Serve:
             self.running_continuous_batching_manager.logit_processor = LogitsProcessorList()
             self.running_continuous_batching_manager.start()
 
+        cb_manager = self.running_continuous_batching_manager
+        assert cb_manager is not None
+
         # TODO (Joao, Lysandre): this should also work with tool support
-        inputs = processor.apply_chat_template(
+        inputs = processor.apply_chat_template(  # type: ignore[union-attr]
             req["messages"], return_tensors="pt", add_generation_prompt=True, return_dict=True
         ).to(model.device)["input_ids"][0]
 
@@ -850,7 +856,7 @@ class Serve:
                 yield self.build_chat_completion_chunk(request_id, role="assistant", model=model_id_and_revision)
 
                 n_tokens_generated = 0
-                for result in self.running_continuous_batching_manager.request_id_iter(request_id):
+                for result in cb_manager.request_id_iter(request_id):
                     n_tokens_generated += 1
 
                     # Always yield the token content (even for the final FINISHED token)
@@ -886,15 +892,15 @@ class Serve:
 
             except Exception as e:
                 logger.error(str(e))
-                self.running_continuous_batching_manager.cancel_request(request_id)
+                cb_manager.cancel_request(request_id)
                 yield f'data: {{"error": "{str(e)}"}}'
 
         def buffer_chat_completion(_request_id):
             result = None
-            while self.running_continuous_batching_manager.is_running() and result is None:
-                result = self.running_continuous_batching_manager.get_result(request_id=_request_id, timeout=1)
+            while cb_manager.is_running() and result is None:
+                result = cb_manager.get_result(request_id=_request_id, timeout=1)
 
-            content = tokenizer.decode(result.generated_tokens)
+            content = tokenizer.decode(result.generated_tokens)  # type: ignore[union-attr]
 
             chat_completion_result = ChatCompletion(
                 id=_request_id,
@@ -923,7 +929,7 @@ class Serve:
                     yield self.chunk_to_sse_element(_chunk)
                     await asyncio.sleep(0)
             except asyncio.CancelledError:
-                self.running_continuous_batching_manager.cancel_request(_request_id)
+                cb_manager.cancel_request(_request_id)
                 logger.warning(f"Request {_request_id} was cancelled.")
 
         def cancellation_wrapper_buffer(_request_id):
@@ -931,10 +937,10 @@ class Serve:
             try:
                 return buffer_chat_completion(_request_id)
             except asyncio.CancelledError:
-                self.running_continuous_batching_manager.cancel_request(_request_id)
+                cb_manager.cancel_request(_request_id)
                 logger.warning(f"Request {_request_id} was cancelled.")
 
-        request_id = self.running_continuous_batching_manager.add_request(
+        request_id = cb_manager.add_request(
             inputs, request_id=request_id, max_new_tokens=generation_config.max_new_tokens, streaming=req.get("stream")
         )
 
@@ -1062,7 +1068,7 @@ class Serve:
             return_dict=True,
             tokenize=True,
         )
-        inputs = inputs.to(model.device)
+        inputs = inputs.to(model.device)  # type: ignore[union-attr]
         request_id = req.get("request_id", "req_0")
 
         # Temporary hack for GPTOSS 1: don't filter special tokens
@@ -1079,8 +1085,8 @@ class Serve:
 
         last_kv_cache = None
         if self.is_continuation(req) and not must_discard_cache:
-            seq_len = self.last_kv_cache.get_seq_length()
-            if inputs["input_ids"].shape[-1] > seq_len:
+            seq_len = self.last_kv_cache.get_seq_length()  # type: ignore[union-attr]
+            if inputs["input_ids"].shape[-1] > seq_len:  # type: ignore[union-attr]
                 last_kv_cache = self.last_kv_cache
 
         generation_kwargs = {
@@ -1313,7 +1319,7 @@ class Serve:
         inputs = processor.apply_chat_template(
             inputs, add_generation_prompt=True, return_tensors="pt", return_dict=True
         )["input_ids"]
-        inputs = inputs.to(model.device)
+        inputs = inputs.to(model.device)  # type: ignore[union-attr]
         request_id = req.get("previous_response_id", "req_0")
 
         # Temporary hack for GPT-OSS 1: don't filter special tokens
@@ -1330,7 +1336,7 @@ class Serve:
 
         last_kv_cache = None
         if self.is_continuation(req) and not must_discard_cache:
-            seq_len = self.last_kv_cache.get_seq_length()
+            seq_len = self.last_kv_cache.get_seq_length()  # type: ignore[union-attr]
             if inputs["input_ids"].shape[-1] > seq_len:
                 last_kv_cache = self.last_kv_cache
 
@@ -1513,7 +1519,7 @@ class Serve:
                         status="completed",
                         role="assistant",
                         content=[response_content_part_done.part],
-                        annotations=[],
+                        annotations=[],  # type: ignore[call-arg]
                     ),
                 )
                 sequence_number += 1
@@ -1619,7 +1625,7 @@ class Serve:
         inputs = processor.apply_chat_template(
             inputs, add_generation_prompt=True, return_tensors="pt", return_dict=True
         )["input_ids"]
-        inputs = inputs.to(model.device)
+        inputs = inputs.to(model.device)  # type: ignore[union-attr]
         request_id = req.get("previous_response_id", "req_0")
 
         # Temporary hack for GPTOSS 1: don't filter special tokens
@@ -1631,7 +1637,7 @@ class Serve:
 
         last_kv_cache = None
         if self.is_continuation(req) and not must_discard_cache:
-            seq_len = self.last_kv_cache.get_seq_length()
+            seq_len = self.last_kv_cache.get_seq_length()  # type: ignore[union-attr]
             if inputs.shape[-1] > seq_len:
                 last_kv_cache = self.last_kv_cache
 
@@ -1655,7 +1661,7 @@ class Serve:
             status="completed",
             role="assistant",
             content=[ResponseOutputText(type="output_text", text=full_text, annotations=[])],
-            annotations=[],
+            annotations=[],  # type: ignore[call-arg]
         )
         response_completed = Response(
             id=f"resp_{request_id}",
@@ -1692,14 +1698,16 @@ class Serve:
         audio_model, audio_processor = self.load_audio_model_and_processor(model_id_and_revision)
 
         generation_streamer = TextIteratorStreamer(
-            audio_processor.tokenizer, skip_special_tokens=True, skip_prompt=True
+            audio_processor.tokenizer,  # type: ignore[attr-defined]
+            skip_special_tokens=True,
+            skip_prompt=True,
         )
         generation_config = create_generation_config_from_req(
             req, model_generation_config=audio_model.generation_config
         )
 
         # Read the binary audio file using librosa
-        model_sampling_rate = audio_processor.feature_extractor.sampling_rate
+        model_sampling_rate = audio_processor.feature_extractor.sampling_rate  # type: ignore[attr-defined]
         audio_bytes = io.BytesIO(req["file"])
         audio_array, _ = librosa.load(audio_bytes, sr=model_sampling_rate, mono=True)
         audio_inputs = audio_processor(audio_array, sampling_rate=model_sampling_rate, return_tensors="pt").to(

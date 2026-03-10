@@ -41,16 +41,17 @@ def add_fast_image_processor(
     Adds the necessary references to the fast image processor in the transformers package, and create the fast image processor file in the model's folder.
     """
     model_module = TRANSFORMERS_PATH / "models" / model_name
-    image_processing_module_file = list(model_module.glob("image_processing*.py"))
-    if not image_processing_module_file:
+    image_processing_module_files = list(model_module.glob("image_processing*.py"))
+    if not image_processing_module_files:
         raise ValueError(f"No image processing module found in {model_module}")
-    elif len(image_processing_module_file) > 1:
-        for file_name in image_processing_module_file:
+    elif len(image_processing_module_files) > 1:
+        image_processing_module_file = ""
+        for file_name in image_processing_module_files:
             if not str(file_name).endswith("_fast.py"):
                 image_processing_module_file = str(file_name)
                 break
     else:
-        image_processing_module_file = str(image_processing_module_file[0])
+        image_processing_module_file = str(image_processing_module_files[0])
 
     with open(image_processing_module_file, "r", encoding="utf-8") as f:
         content_base_file = f.read()

@@ -110,7 +110,7 @@ class RichInterface:
         with Live(console=self._console, refresh_per_second=4) as live:
             text = ""
             finish_reason: str | None = None
-            async for token in await stream:
+            async for token in stream:
                 outputs = token.choices[0].delta.content
                 finish_reason = getattr(token.choices[0], "finish_reason", finish_reason)
 
