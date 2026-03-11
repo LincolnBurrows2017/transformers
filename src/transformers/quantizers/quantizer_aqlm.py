@@ -58,6 +58,7 @@ class AqlmHfQuantizer(HfQuantizer):
             model,
             modules_to_not_convert=self.quantization_config.linear_weights_not_to_quantize,
             quantization_config=self.quantization_config,
+            modules_to_not_convert=self.quantization_config.linear_weights_not_to_quantize,
         )
 
     @property
