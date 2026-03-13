@@ -235,6 +235,9 @@ class Qwen3_5Config(PreTrainedConfig):
         self.vision_end_token_id = vision_end_token_id
         self.tie_word_embeddings = tie_word_embeddings
         super().__init__(**kwargs)
+        # Propagate num_labels to text_config if it was set
+        if "num_labels" in kwargs:
+            self.text_config.num_labels = kwargs["num_labels"]
 
 
 __all__ = ["Qwen3_5Config", "Qwen3_5TextConfig"]
