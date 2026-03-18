@@ -325,7 +325,7 @@ class WhisperTokenizer(TokenizersBackend):
         return "".join(decoded_outputs)
 
     # Copied from transformers.models.whisper.tokenization_whisper.WhisperTokenizer._compute_offsets
-    def _compute_offsets(self, token_ids, time_precision=0.02, segment_size=1500):
+    def _compute_offsets(self, token_ids, time_precision=0.02, segment_size=1500, skip_special_tokens=False):
         """
         Compute offsets for a given tokenized input
 
@@ -336,6 +336,8 @@ class WhisperTokenizer(TokenizersBackend):
                 The time ratio to convert from token to time.
             segment_size (`int`, *optional*, defaults to 1500):
                 The number of features in the input mel spectrogram.
+            skip_special_tokens (`bool`, *optional*, defaults to `False`):
+                Whether or not to remove special tokens from the token ids before computing offsets.
         """
         offsets = []
         # ensure torch tensor of token ids is placed on cpu
@@ -377,7 +379,7 @@ class WhisperTokenizer(TokenizersBackend):
                 cur_max_timestamp = end_timestamp_position
 
                 # strip timestamp tokens from the text output
-                sliced_tokens = self._preprocess_token_ids(sliced_tokens)
+                sliced_tokens = self._preprocess_token_ids(sliced_tokens, skip_special_tokens=skip_special_tokens)
                 text = self._decode(sliced_tokens)
                 text = self._filter_timestamp_ids(text)
                 offsets.append(
@@ -507,7 +509,7 @@ class WhisperTokenizer(TokenizersBackend):
 
         # retrieve offsets
         if output_offsets:
-            offsets = self._compute_offsets(token_ids, time_precision=time_precision)
+            offsets = self._compute_offsets(token_ids, time_precision=time_precision, skip_special_tokens=skip_special_tokens)
             return {"text": text, "offsets": offsets}
         return text
 
