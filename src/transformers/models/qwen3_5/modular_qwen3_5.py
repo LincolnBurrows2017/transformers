@@ -210,6 +210,9 @@ class Qwen3_5Config(Qwen3VLConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+        # Propagate num_labels to text_config if it was set
+        if "num_labels" in kwargs:
+            self.text_config.num_labels = kwargs["num_labels"]
 
 
 class Qwen3_5DynamicCache(Qwen3NextDynamicCache):
